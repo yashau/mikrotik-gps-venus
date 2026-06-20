@@ -1,91 +1,158 @@
-# StarfixVenus
+# MikroTik GPS Venus
 
-Get your Starlink dish's GPS location into the Victron VRM portal — directly on the Cerbo GX (or any Venus OS device), with no external gateways, MQTT brokers, or USB GPS dongles.
+Get GPS location from a MikroTik router into the Victron VRM portal on a Cerbo GX or other Venus OS device.
 
-## How it works
+The script polls `/system/gps/monitor` over the RouterOS API, converts the position to NMEA 0183, and feeds Victron's built-in `gps-dbus` service through a virtual serial port.
 
-The script polls GPS coordinates from the Starlink dish over its local gRPC API, converts them to standard NMEA 0183 sentences, and feeds them into Victron's built-in `gps-dbus` service through a virtual serial port. From there, Venus OS publishes the position to the VRM portal automatically.
-
-```
-Starlink dish ──gRPC──> grpcurl ──JSON──> starfixvenus.py ──NMEA──> virtual serial ──> gps-dbus ──> D-Bus ──> VRM
+```text
+MikroTik router -> RouterOS API -> mikrotik_gps_venus.py -> NMEA -> virtual serial -> gps-dbus -> VRM
 ```
 
-Everything runs on the GX device itself. No extra hardware or services required.
+No Python packages, MQTT broker, USB GPS dongle, or external gateway are required.
 
 ## Prerequisites
 
-- A Victron GX device running Venus OS (Cerbo GX, Venus GX, etc.) with root/SSH access
-- A Starlink dish with **"Allow access on local network"** enabled in the Starlink app
-- The GX device must be on the Starlink network (connected via Ethernet or Wi-Fi)
+- Victron GX device running Venus OS with root/SSH access
+- MikroTik router with GPS working under `/system gps`
+- RouterOS API enabled on the MikroTik router
+- Network route from the GX device to the MikroTik router
 
-## Installation
+For manual Cerbo testing, the MikroTik does not need to be reachable yet.
 
-### 1. Build `grpcurl` for your platform
+The service is intended to be set-and-forget. If the MikroTik is down at boot,
+each API attempt times out and the service keeps retrying until the first valid
+fix appears. If the MikroTik drops out later, Venus keeps receiving the last
+good fix while the poller retries in the background.
 
-You need to cross-compile [grpcurl](https://github.com/fullstorydev/grpcurl) for your GX device's architecture. The Cerbo GX uses armv7l (ARM 32-bit). You can check yours with `uname -m` over SSH.
+The running service watches `.env`. Changes to MikroTik connection details,
+manual coordinates, timeouts, `GPS_SOURCE`, and polling intervals are reloaded
+automatically. Restart only after changing virtual serial device paths or after
+copying in a new script version.
 
-Requires [Go](https://go.dev/dl/) installed on your build machine:
+## MikroTik Setup
 
-```bash
-git clone https://github.com/fullstorydev/grpcurl.git
-cd grpcurl/cmd/grpcurl
+On RouterOS, confirm GPS and API access:
 
-# For Cerbo GX (armv7l):
-GOOS=linux GOARCH=arm GOARM=7 go build -o grpcurl .
-
-# For other platforms, adjust GOOS/GOARCH accordingly, e.g.:
-# GOOS=linux GOARCH=arm64 go build -o grpcurl .   # 64-bit ARM (aarch64)
-# GOOS=linux GOARCH=amd64 go build -o grpcurl .   # x86_64
+```routeros
+/system gps monitor once
+/ip service print where name~"api"
 ```
 
-Verify the binary is correct:
+If needed, enable the plain API service for the vessel LAN:
 
-```bash
-file grpcurl
-# Should show: ELF 32-bit LSB executable, ARM, ... for armv7l
+```routeros
+/ip service enable api
+/ip service set api port=8728
 ```
 
-### 2. Copy files to the GX device
+API-SSL on port `8729` is also supported by setting `MIKROTIK_TLS=true`.
+
+## Install On Venus OS
+
+Copy the project to the GX device:
 
 ```bash
-scp grpcurl root@<cerbo-ip>:/data/starlink-gps/grpcurl
-scp starfixvenus.py root@<cerbo-ip>:/data/starlink-gps/starfixvenus.py
-```
-
-### 3. Set permissions
-
-```bash
+ssh root@<cerbo-ip> "mkdir -p /data/mikrotik-gps-venus"
+scp -r mikrotik_gps_venus.py .env.example scripts root@<cerbo-ip>:/data/mikrotik-gps-venus/
 ssh root@<cerbo-ip>
-chmod +x /data/starlink-gps/grpcurl
-chmod +x /data/starlink-gps/starfixvenus.py
+cd /data/mikrotik-gps-venus
+cp .env.example .env
+chmod +x mikrotik_gps_venus.py
+sh scripts/install-helpers.sh
 ```
 
-### 4. Test connectivity
+Edit `.env` on the GX device:
 
 ```bash
-./starfixvenus.py test
+vi .env
 ```
 
-This will fetch GPS from the Starlink dish and display the coordinates and generated NMEA sentences. If it fails, check that:
-- "Allow access on local network" is enabled in the Starlink app
-- The dish is reachable at `192.168.100.1:9200`
-- The `grpcurl` binary is executable
+At minimum, set:
 
-### 5. Start the bridge
+```dotenv
+MIKROTIK_HOST=<router-ip>
+MIKROTIK_PORT=8728
+MIKROTIK_USER=admin
+MIKROTIK_PASSWORD=your-router-password
+GPS_SOURCE=mikrotik
+```
+
+Do not commit the real `.env`; it is ignored by git.
+
+## Test With The MikroTik
+
+Once the GX can reach the router:
 
 ```bash
-./starfixvenus.py -v start
+./mikrotik_gps_venus.py -v test
 ```
 
-Check VRM — your GPS position should appear within a minute.
+The test prints latitude, longitude, altitude, and the generated NMEA sentences.
 
-### 6. Auto-start on boot
+## Manual Coordinate Test
 
-Add to `/data/rc.local` (create the file if it doesn't exist):
+Use this before the MikroTik is physically on the vessel network. Provide any
+safe test coordinate you want Venus OS to receive:
+
+```bash
+./mikrotik_gps_venus.py -v test --lat <latitude> --lon <longitude> --alt <altitude_m>
+```
+
+To push those fixed coordinates into Venus OS through `gps-dbus`:
+
+```bash
+./mikrotik_gps_venus.py -v start --manual --lat <latitude> --lon <longitude> --alt <altitude_m>
+```
+
+You can also set manual mode in `.env`:
+
+```dotenv
+GPS_SOURCE=manual
+MANUAL_LAT=<latitude>
+MANUAL_LON=<longitude>
+MANUAL_ALT=<altitude_m>
+```
+
+Switch back to `GPS_SOURCE=mikrotik` after the MikroTik is reachable from the Cerbo.
+
+## Start The Bridge
+
+```bash
+./mikrotik_gps_venus.py -v start
+```
+
+Check VRM after a minute. Stop the bridge with:
+
+```bash
+./mikrotik_gps_venus.py stop
+```
+
+After installing the helper scripts, the short commands are:
+
+```bash
+./start
+./stop
+./restart
+./status
+./logs
+```
+
+Usually, after changing `.env`, just wait for the next poll or run:
+
+```bash
+./logs
+```
+
+Use `./restart` after changing virtual serial device paths or updating the script.
+
+## Auto-Start On Boot
+
+Add this to `/data/rc.local` on the GX device:
 
 ```bash
 #!/bin/bash
-/data/starlink-gps/starfixvenus.py start &
+cd /data/mikrotik-gps-venus
+./start
 ```
 
 Make it executable:
@@ -94,70 +161,84 @@ Make it executable:
 chmod +x /data/rc.local
 ```
 
-The script will survive reboots and Venus OS firmware updates (the `/data` partition is persistent).
-
-## Usage
-
-```
-starfixvenus.py [-v | -d] {start,stop,test}
-
-Commands:
-  start     Start the GPS bridge (runs in foreground)
-  stop      Stop all GPS services
-  test      Test fetching GPS from Starlink
-
-Options:
-  -v        Verbose output
-  -d        Debug output
-  --host    Starlink dish IP (default: 192.168.100.1)
-  --port    gRPC port (default: 9200)
-  --interval  Poll interval in seconds (default: 30)
-```
+The `/data` partition survives Venus OS firmware updates.
 
 ## Configuration
 
-Edit the config dicts at the top of `starfixvenus.py`:
-
 | Setting | Default | Description |
-|---------|---------|-------------|
-| `host` | `192.168.100.1` | Starlink dish IP |
-| `grpc_port` | `9200` | Starlink gRPC port |
-| `poll_interval` | `30` | Seconds between GPS polls |
-| `write_interval` | `1` | NMEA write cadence (seconds) |
-| `virtual_device` | `/dev/ttyACM0` | Virtual serial read side |
-| `write_device` | `/tmp/starlink_gps_write` | Virtual serial write side |
+| --- | --- | --- |
+| `GPS_SOURCE` | `mikrotik` | `mikrotik` or `manual` |
+| `MIKROTIK_HOST` | empty | Router address; required for `GPS_SOURCE=mikrotik` |
+| `MIKROTIK_PORT` | `8728` | RouterOS API port |
+| `MIKROTIK_USER` | `admin` | RouterOS API username |
+| `MIKROTIK_PASSWORD` | empty | RouterOS API password |
+| `MIKROTIK_TLS` | `false` | Use API-SSL |
+| `MIKROTIK_TLS_VERIFY` | `false` | Verify API-SSL certificate |
+| `MIKROTIK_TIMEOUT` | `10` | Seconds before one API attempt fails |
+| `MIKROTIK_REQUIRE_VALID` | `true` | Require `valid=yes` when RouterOS returns it |
+| `MIKROTIK_MAX_DATA_AGE` | `0` | Reject stale GPS data when greater than zero |
+| `REJECT_ZERO_COORDINATES` | `true` | Reject bogus `0,0` coordinates |
+| `MANUAL_LAT` | empty | Manual latitude for testing |
+| `MANUAL_LON` | empty | Manual longitude for testing |
+| `MANUAL_ALT` | `0.0` | Manual altitude in meters |
+| `POLL_INTERVAL` | `30` | Seconds between GPS polls |
+| `STARTUP_TIMEOUT` | `0` | Seconds to wait for first fix before exiting; `0` retries forever |
+| `NMEA_WRITE_INTERVAL` | `1` | Seconds between NMEA writes |
+| `NMEA_VIRTUAL_DEVICE` | `/dev/ttyACM0` | Virtual serial read side for gps-dbus |
+| `NMEA_WRITE_DEVICE` | `/tmp/mikrotik_gps_write` | Virtual serial write side |
+| `GPS_DBUS_BINARY` | `/opt/victronenergy/gps-dbus/gps_dbus` | Victron gps-dbus binary |
+
+## Commands
+
+```text
+mikrotik_gps_venus.py [-v | -d] [--env-file PATH] {config,test,start,stop}
+
+Commands:
+  config    Print effective configuration
+  test      Fetch or use one GPS fix and print NMEA
+  start     Start the GPS bridge
+  stop      Stop gps-dbus/socat bridge services
+```
+
+Useful overrides:
+
+```bash
+./mikrotik_gps_venus.py test --host <router-ip> --user admin --password secret
+./mikrotik_gps_venus.py test --manual --lat 1.234567 --lon 2.345678 --alt 10
+./mikrotik_gps_venus.py test --tls --port 8729
+```
 
 ## Troubleshooting
 
+**Manual test works but MikroTik mode fails**
+
+- Confirm the GX can route to the MikroTik on the vessel network
+- Confirm `/ip service print where name~"api"` shows the selected API service enabled
+- Confirm the RouterOS user has `api` and `read` permissions
+- Run `/system gps monitor once` on the MikroTik and check that it has a valid fix
+
 **GPS not showing on VRM**
-- Run `./starfixvenus.py -d start` for debug logs
-- Ensure no other GPS device or gps-dbus instance is running (`killall gps_dbus`)
+
+- Run `./mikrotik_gps_venus.py -d start` for debug logs
+- Stop other GPS services first with `./mikrotik_gps_venus.py stop`
 - Verify the virtual serial device exists: `ls -la /dev/ttyACM0`
 
-**grpcurl fails / times out**
-- Confirm the dish is reachable: `ping 192.168.100.1`
-- Ensure "Allow access on local network" is ON in the Starlink app
-- Check that the grpcurl binary is the correct architecture (`file /data/starlink-gps/grpcurl`)
-
 **gps-dbus exits immediately**
-- Another gps-dbus process may be running — stop it first: `./starfixvenus.py stop`
-- Check that `/dev/ttyACM0` isn't already in use by a physical USB device
 
-## How it works (detailed)
+- Ensure NMEA is flowing by running manual mode first
+- Check that `/dev/ttyACM0` is not already used by a physical USB GPS
+- Increase `NMEA_WRITE_INTERVAL` only after the default works
 
-1. **GPS polling**: Uses `grpcurl` to call `SpaceX.API.Device.Device/Handle` with `{"getLocation":{}}` over gRPC. The Starlink dish returns latitude, longitude, and altitude.
+## Development
 
-2. **NMEA generation**: Converts decimal-degree coordinates into standard NMEA 0183 sentences (GPGGA for position/altitude, GPRMC for navigation data), complete with checksums.
+This project uses `uv` for dev tooling. Runtime on Venus OS remains Python stdlib only.
 
-3. **Virtual serial**: Uses `socat` to create a PTY pair. One end acts as `/dev/ttyACM0` (the "GPS device"), the other is the write endpoint.
-
-4. **Victron integration**: Launches Victron's native `gps-dbus` binary pointed at the virtual serial device. This is the same service that handles real GPS hardware — it reads NMEA, publishes to D-Bus, and VRM picks it up.
-
-5. **Health monitoring**: The main loop watches both `socat` and `gps-dbus` and restarts them if they crash.
-
-## Credits
-
-Inspired by [victron-gps-mqtt-bridge](https://github.com/octaviospain/victron-gps-mqtt-bridge) — this project eliminates the need for an external MQTT broker by using Victron's native GPS service directly.
+```bash
+uv run ruff check .
+uv run ruff format .
+uv run basedpyright
+python -m py_compile mikrotik_gps_venus.py
+```
 
 ## License
 

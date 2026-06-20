@@ -1,1 +1,10 @@
+.env
+.env.*
+!.env.example
+
+__pycache__/
+.venv/
+*.py[cod]
+
+*.log
 grpcurl

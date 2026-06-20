@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="${APP_DIR:-/data/mikrotik-gps-venus}"
+LOG_FILE="${LOG_FILE:-/data/log/mikrotik-gps-venus.log}"
+
+mkdir -p "$(dirname "$LOG_FILE")"
+cd "$APP_DIR"
+
+# shellcheck disable=SC2009
+if ps w | grep -F "mikrotik_gps_venus.py -v start" | grep -v grep >/dev/null; then
+    echo "MikroTik GPS bridge is already running."
+    exit 0
+fi
+
+PYTHONUNBUFFERED=1 ./mikrotik_gps_venus.py -v start >"$LOG_FILE" 2>&1 &
+echo "MikroTik GPS bridge started. Log: $LOG_FILE"

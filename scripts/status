@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+# shellcheck disable=SC2009
+ps w | grep -E 'mikrotik_gps_venus|gps_dbus|socat' | grep -v grep || true
+
+echo
+if [ -e /dev/ttyACM0 ]; then
+    ls -la /dev/ttyACM0
+else
+    echo "/dev/ttyACM0 is missing"
+fi

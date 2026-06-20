@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+LOG_FILE="${LOG_FILE:-/data/log/mikrotik-gps-venus.log}"
+LINES="${1:-80}"
+
+tail -n "$LINES" "$LOG_FILE"

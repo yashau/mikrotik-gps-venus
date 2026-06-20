@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="${APP_DIR:-/data/mikrotik-gps-venus}"
+
+cd "$APP_DIR"
+./stop
+./start

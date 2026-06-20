@@ -1,0 +1,40 @@
+[project]
+name = "mikrotik-gps-venus"
+version = "0.1.0"
+description = "Bridge MikroTik RouterOS GPS data into Victron Venus OS gps-dbus."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.8",
+    "ruff>=0.12.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.basedpyright]
+include = ["mikrotik_gps_venus.py"]
+exclude = [
+    ".venv",
+    "__pycache__",
+]
+pythonVersion = "3.8"
+typeCheckingMode = "basic"
